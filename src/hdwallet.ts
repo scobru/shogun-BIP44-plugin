@@ -1,6 +1,8 @@
 import { log, logError, logWarn, EventEmitter } from "./utils";
 // @ts-ignore
-import SEA from "gun/sea";
+import "gun/sea";
+// @ts-ignore
+const SEA = (window as any).SEA || (global as any).SEA;
 import { ethers } from "ethers";
 import {
   WalletPath,
@@ -550,22 +552,31 @@ export class HDWallet extends EventEmitter {
   private async encryptSensitiveData(text: string): Promise<string> {
     try {
       const user = this.gun.user();
-      if (user && user._ && user._.sea) {
-        // Use user key to encrypt
-        const encrypted = await SEA.encrypt(text, user._.sea);
-        return JSON.stringify(encrypted);
-      } else {
-        // Fallback: use key derived from user ID
-        const userIdentifier = this.getStorageUserIdentifier();
-        const key = `shogun-encrypt-${userIdentifier}-key`;
-        const encrypted = await SEA.encrypt(text, key);
-        return JSON.stringify(encrypted);
+      if (!user || !user.is || !user._?.sea) {
+        throw new Error("User not authenticated or SEA keys not available");
       }
+
+      // Use user SEA keys to encrypt
+      const encrypted = await SEA.encrypt(text, user._.sea);
+      
+      if (!encrypted) {
+        throw new Error("Encryption failed - no result from SEA.encrypt");
+      }
+
+      // Validate that encryption actually worked by checking if result differs from input
+      if (typeof encrypted === 'string' && encrypted === text) {
+        throw new Error("Encryption failed - output same as input");
+      }
+
+      const encryptedString = JSON.stringify(encrypted);
+      log("Sensitive data encrypted successfully");
+      return encryptedString;
     } catch (error) {
-      logError("Error encrypting data:", error);
-      // Fallback: save in clear but with warning
-      log("WARNING: Sensitive data saved without encryption");
-      return `unencrypted:${text}`;
+      logError("Critical error encrypting sensitive data:", error);
+      
+      // NEVER save in clear text as fallback - this is a security vulnerability
+      // Instead, throw the error to prevent unsafe storage
+      throw new Error(`Cannot save sensitive data: encryption failed - ${error}`);
     }
   }
 
@@ -578,28 +589,37 @@ export class HDWallet extends EventEmitter {
     encryptedText: string
   ): Promise<string | null> {
     try {
-      // Check if it's unencrypted text (fallback)
+      // Check if it's unencrypted text (legacy - should not happen in secure version)
       if (encryptedText.startsWith("unencrypted:")) {
+        logWarn("Found unencrypted sensitive data - this is a security issue");
         return encryptedText.substring(12);
       }
 
       // Try to parse encrypted text
-      const encryptedData = JSON.parse(encryptedText);
+      let encryptedData;
+      try {
+        encryptedData = JSON.parse(encryptedText);
+      } catch (parseError) {
+        logError("Cannot parse encrypted data:", parseError);
+        return null;
+      }
 
       const user = this.gun.user();
-      if (user && user._ && user._.sea) {
-        // Use user key to decrypt
-        const decrypted = await SEA.decrypt(encryptedData, user._.sea);
-        return decrypted as string;
-      } else {
-        // Fallback: use key derived from user ID
-        const userIdentifier = this.getStorageUserIdentifier();
-        const key = `shogun-encrypt-${userIdentifier}-key`;
-        const decrypted = await SEA.decrypt(encryptedData, key);
-        return decrypted as string;
+      if (!user || !user.is || !user._?.sea) {
+        throw new Error("User not authenticated or SEA keys not available");
       }
+
+      // Use user SEA keys to decrypt
+      const decrypted = await SEA.decrypt(encryptedData, user._.sea);
+      
+      if (!decrypted) {
+        throw new Error("Decryption failed - no result from SEA.decrypt");
+      }
+
+      log("Sensitive data decrypted successfully");
+      return decrypted as string;
     } catch (error) {
-      logError("Error decrypting data:", error);
+      logError("Error decrypting sensitive data:", error);
       return null;
     }
   }
@@ -687,37 +707,80 @@ export class HDWallet extends EventEmitter {
 
   /**
    * Save user's master mnemonic to both GunDB and localStorage
+   * CRITICAL: Always encrypts the mnemonic before storage
    */
   async saveUserMasterMnemonic(mnemonic: string): Promise<void> {
     try {
-      // 1. Save to GunDB (automatically encrypted by SEA)
-      const user = this.gun.user();
-      if (user && user.is) {
-        // Simulazione per i test
-        if (
-          process.env.NODE_ENV === "test" &&
-          user.get &&
-          typeof user.get().put === "function"
-        ) {
-          await user.get().put({});
-          return;
-        }
-
-        // encrypt mnemonic before saving to GunDB
-        const encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
-        await user.get("master_mnemonic").put(encryptedMnemonic);
-        log("Mnemonic saved to GunDB");
+      if (!mnemonic || typeof mnemonic !== 'string') {
+        throw new Error("Invalid mnemonic provided");
       }
 
-      // 2. Also save to localStorage as backup
-      const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
+      // Validate mnemonic format (basic check)
+      const words = mnemonic.trim().split(/\s+/);
+      if (words.length < 12 || words.length > 24) {
+        throw new Error("Invalid mnemonic length");
+      }
 
-      // Encrypt mnemonic before saving to localStorage
-      const encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
-      localStorage.setItem(storageKey, encryptedMnemonic);
-      log("Encrypted mnemonic also saved to localStorage as backup");
+      const user = this.gun.user();
+      if (!user || !user.is) {
+        throw new Error("User not authenticated - cannot save mnemonic");
+      }
+
+      // Simulazione per i test
+      if (process.env.NODE_ENV === "test" && user.get && typeof user.get().put === "function") {
+        await user.get().put({});
+        return;
+      }
+
+      // 1. Encrypt mnemonic before saving to GunDB
+      let encryptedMnemonic: string;
+      try {
+        encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
+        log("Mnemonic encrypted successfully for GunDB storage");
+      } catch (encryptError) {
+        throw new Error(`Failed to encrypt mnemonic for GunDB: ${encryptError}`);
+      }
+
+      // 2. Save encrypted mnemonic to GunDB
+      try {
+        await new Promise<void>((resolve, reject) => {
+          user.get("master_mnemonic").put(encryptedMnemonic, (ack: any) => {
+            if (ack.err) {
+              reject(new Error(`GunDB save failed: ${ack.err}`));
+            } else {
+              log("Encrypted mnemonic saved to GunDB successfully");
+              resolve();
+            }
+          });
+        });
+      } catch (gunError) {
+        throw new Error(`Failed to save to GunDB: ${gunError}`);
+      }
+
+      // 3. Also save encrypted mnemonic to localStorage as backup
+      try {
+        const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
+        localStorage.setItem(storageKey, encryptedMnemonic);
+        log("Encrypted mnemonic saved to localStorage as backup");
+      } catch (storageError) {
+        logWarn("Failed to save to localStorage backup:", storageError);
+        // Don't fail the entire operation if localStorage fails
+      }
+
+      // 4. Verification: try to read back and decrypt to ensure it worked
+      try {
+        const verificationMnemonic = await this.getUserMasterMnemonic();
+        if (verificationMnemonic !== mnemonic) {
+          throw new Error("Verification failed - saved mnemonic doesn't match original");
+        }
+        log("Mnemonic save verification successful");
+      } catch (verifyError) {
+        logError("Verification failed:", verifyError);
+        throw new Error(`Mnemonic save verification failed: ${verifyError}`);
+      }
+
     } catch (error) {
-      logError("Error saving mnemonic:", error);
+      logError("Critical error saving mnemonic:", error);
       throw error;
     }
   }
@@ -917,5 +980,54 @@ export class HDWallet extends EventEmitter {
       walletsImported: data.walletKeys ? await this.importWalletKeys(data.walletKeys) : 0,
       gunPairImported: data.gunPair ? await this.importGunPair(data.gunPair) : false,
     };
+  }
+
+  /**
+   * Test encryption system to ensure it's working properly
+   * This should be called during initialization to verify security
+   */
+  private async testEncryptionSystem(): Promise<boolean> {
+    try {
+      const user = this.gun.user();
+      if (!user || !user.is || !user._?.sea) {
+        logWarn("Cannot test encryption: user not authenticated");
+        return false;
+      }
+
+      const testData = "test-encryption-data-" + Date.now();
+      
+      // Test encryption
+      const encrypted = await this.encryptSensitiveData(testData);
+      if (!encrypted || encrypted.includes(testData)) {
+        logError("Encryption test failed: data not properly encrypted");
+        return false;
+      }
+
+      // Test decryption
+      const decrypted = await this.decryptSensitiveData(encrypted);
+      if (decrypted !== testData) {
+        logError("Decryption test failed: data doesn't match");
+        return false;
+      }
+
+      log("Encryption system test passed");
+      return true;
+    } catch (error) {
+      logError("Encryption system test failed:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Initialize wallet paths and test encryption system
+   */
+  async initializeWalletPathsAndTestEncryption(): Promise<void> {
+    try {
+      await this.initializeWalletPaths();
+      await this.testEncryptionSystem();
+    } catch (error) {
+      logError("Error initializing wallet paths and testing encryption:", error);
+      throw new Error(`Failed to initialize wallet paths and test encryption: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 } 

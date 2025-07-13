@@ -1,5 +1,6 @@
 import { log, logError, logWarn, EventEmitter } from "./utils";
-import SEA from "gun/sea";
+import "gun/sea";
+const SEA = (typeof window !== "undefined" ? window.SEA : global.SEA);
 import { ethers } from "ethers";
 import { WalletEventType, } from "./types";
 /**

@@ -174,6 +174,18 @@ export class HDWalletPlugin
   }
 
   /**
+   * Save user's master mnemonic securely (encrypted)
+   */
+  async saveUserMasterMnemonic(mnemonic: string): Promise<void> {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      throw new Error("HDWallet not available");
+    }
+
+    return await this.hdWallet.saveUserMasterMnemonic(mnemonic);
+  }
+
+  /**
    * @inheritdoc
    */
   async exportMnemonic(password?: string): Promise<string> {
