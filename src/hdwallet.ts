@@ -650,7 +650,13 @@ export class HDWallet extends EventEmitter {
             if (!resolved) {
               resolved = true;
               clearTimeout(timeout);
-              resolve(data || null);
+              // Check if data is a string and looks like encrypted JSON before attempting to decrypt
+              if (typeof data === 'string' && (data.startsWith('{') || data.includes('"')) ) {
+                resolve(data || null);
+              } else {
+                // Assume it's plain text if not a string or doesn't look like encrypted JSON
+                resolve(data || null);
+              }
             }
           });
         });
@@ -659,8 +665,14 @@ export class HDWallet extends EventEmitter {
           log("Mnemonic retrieved from GunDB");
           log("gunMnemonic: ", gunMnemonic);
           try {
-            const decrypted = await this.decryptSensitiveData(gunMnemonic);
-            return decrypted;
+            // Only attempt decryption if it looks like encrypted data
+            if (gunMnemonic.startsWith('{') || gunMnemonic.includes('"')) {
+              const decrypted = await this.decryptSensitiveData(gunMnemonic);
+              return decrypted;
+            } else {
+              // If it's plain text, return directly
+              return gunMnemonic;
+            }
           } catch (decryptError) {
             logError("Error decrypting mnemonic from GunDB:", decryptError);
             log("Falling back to localStorage");
