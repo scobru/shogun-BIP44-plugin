@@ -1,5 +1,4 @@
 import ShogunCore from "shogun-core";
-import { HDWalletPlugin, AccountAbstractionPlugin } from "../src";
 
 /**
  * COMPLETE INTEGRATION EXAMPLE WITH SHOGUNCORE

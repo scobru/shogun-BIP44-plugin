@@ -22,14 +22,8 @@ export type {
 export { HDWalletPlugin } from "./hdwalletPlugin";
 export { HDWallet } from "./hdwallet";
 export { BasePlugin } from "./base";
-export { AccountAbstractionPlugin } from "./accountAbstraction";
 
 // Esporta i tipi di Account Abstraction
-export type {
-  UserOperation,
-  UserOperationOptions,
-  SmartAccountConfig,
-} from "./accountAbstraction";
 
 // Esporta le utility
 export {
