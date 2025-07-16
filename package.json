@@ -1,6 +1,6 @@
 {
   "name": "shogun-bip44",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "BIP44 HD Wallet Plugin for Shogun Core - Provides secure hierarchical deterministic wallet management functionality",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
