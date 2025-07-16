@@ -1,45 +1,82 @@
 import { BasePlugin } from "./base";
 import { HDWallet } from "./hdwallet";
-import { 
-  HDWalletPluginInterface,
-  WalletInfo,
-  WalletConfig
-} from "./types";
+import { HDWalletPluginInterface, WalletInfo, WalletConfig } from "./types";
 import { ethers } from "ethers";
 import { log } from "./utils";
+import { ShogunCore, ShogunSDKConfig, PluginCategory } from "shogun-core";
 
 /**
- * Plugin per la gestione delle funzionalità HD Wallet in ShogunCore
+ * Plugin for HD wallet functionality management in ShogunCore
  */
-export class HDWalletPlugin 
-  extends BasePlugin 
-  implements HDWalletPluginInterface 
+export class HDWalletPlugin
+  extends BasePlugin
+  implements HDWalletPluginInterface
 {
   name = "hdwallet";
   version = "1.0.0";
   description = "Provides HD wallet functionality for ShogunCore";
+  _category = PluginCategory.Wallet;
 
   private hdWallet: HDWallet | null = null;
+  private walletConfig: WalletConfig = {};
+
+  /**
+   * HD Wallet plugin constructor
+   * @param config Optional wallet configuration
+   */
+  constructor(config?: Partial<WalletConfig>) {
+    super();
+    this.walletConfig = {
+      balanceCacheTTL: 30000,
+      defaultGasLimit: 21000,
+      maxRetries: 3,
+      retryDelay: 1000,
+      ...config,
+    };
+  }
 
   /**
    * @inheritdoc
    */
-  initialize(core: any): void {
+  initialize(core: ShogunCore): void {
     super.initialize(core);
 
     if (!core.gun) {
       throw new Error("Gun dependency not available in core");
     }
 
-    const config: WalletConfig = core.config?.wallet || {};
-    this.hdWallet = new HDWallet(core.gun, config);
+    this.hdWallet = new HDWallet(core.gun, this.walletConfig);
 
     // Setup RPC URL if provided
-    if (config.rpcUrl) {
-      this.hdWallet.setRpcUrl(config.rpcUrl);
+    if (this.walletConfig.rpcUrl) {
+      this.hdWallet.setRpcUrl(this.walletConfig.rpcUrl);
     }
 
+    // Listen to core authentication events
+    this.setupCoreEventListeners();
+
     log(`HDWallet plugin initialized with Gun`);
+  }
+
+  /**
+   * Setup event listeners for core authentication events
+   */
+  private setupCoreEventListeners(): void {
+    if (!this.core) return;
+
+    // Listen to login events
+    this.core.on("auth:login", (data: any) => {
+      log("User logged in, initializing wallet paths");
+      this.hdWallet?.initializeWalletPathsAndTestEncryption().catch((error) => {
+        log(`Error initializing wallet paths: ${error}`);
+      });
+    });
+
+    // Listen to logout events
+    this.core.on("auth:logout", () => {
+      log("User logged out, cleaning up wallet data");
+      this.hdWallet?.cleanup();
+    });
   }
 
   /**
@@ -236,7 +273,10 @@ export class HDWalletPlugin
   /**
    * @inheritdoc
    */
-  async importMnemonic(mnemonicData: string, password?: string): Promise<boolean> {
+  async importMnemonic(
+    mnemonicData: string,
+    password?: string
+  ): Promise<boolean> {
     this.assertInitialized();
     if (!this.hdWallet) {
       throw new Error("HDWallet not available");
@@ -248,7 +288,10 @@ export class HDWalletPlugin
   /**
    * @inheritdoc
    */
-  async importWalletKeys(walletsData: string, password?: string): Promise<number> {
+  async importWalletKeys(
+    walletsData: string,
+    password?: string
+  ): Promise<number> {
     this.assertInitialized();
     if (!this.hdWallet) {
       throw new Error("HDWallet not available");
@@ -321,7 +364,68 @@ export class HDWalletPlugin
       return null;
     }
 
-    // Semplificata per evitare errori TypeScript
+    // Simplified to avoid TypeScript errors
     return this.hdWallet.getProvider() ? "configured" : null;
   }
-} 
+
+  /**
+   * Get JSON RPC provider
+   * @returns The ethers.js provider or null if not available
+   */
+  getProvider(): ethers.JsonRpcProvider | null {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      return null;
+    }
+
+    return this.hdWallet.getProvider();
+  }
+
+  /**
+   * Get user's master mnemonic
+   * @returns Promise with mnemonic or null if not available
+   */
+  async getUserMasterMnemonic(): Promise<string | null> {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      return null;
+    }
+
+    return await this.hdWallet.getUserMasterMnemonic();
+  }
+
+  /**
+   * Get current wallet configuration
+   * @returns Wallet configuration
+   */
+  getWalletConfig(): WalletConfig {
+    return { ...this.walletConfig };
+  }
+
+  /**
+   * Update wallet configuration
+   * @param config Partial new configuration
+   */
+  updateWalletConfig(config: Partial<WalletConfig>): void {
+    this.walletConfig = { ...this.walletConfig, ...config };
+
+    // If already initialized, also update HDWallet
+    if (this.hdWallet && config.rpcUrl) {
+      this.hdWallet.setRpcUrl(config.rpcUrl);
+    }
+
+    log("Wallet configuration updated");
+  }
+
+  /**
+   * Set RPC URL and update configuration
+   * @param rpcUrl New RPC URL
+   */
+  setRpcUrlAndUpdateConfig(rpcUrl: string): boolean {
+    const success = this.setRpcUrl(rpcUrl);
+    if (success) {
+      this.updateWalletConfig({ rpcUrl });
+    }
+    return success;
+  }
+}

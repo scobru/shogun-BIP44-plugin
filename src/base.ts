@@ -1,18 +1,22 @@
+import { ShogunCore } from "shogun-core";
+import { PluginCategory } from "shogun-core";
+
 /**
  * Base class for Shogun plugins
  */
 export abstract class BasePlugin {
-  protected core: any = null;
+  protected core: ShogunCore | null = null;
   protected initialized = false;
 
   abstract name: string;
   abstract version: string;
   abstract description: string;
+  abstract _category?: PluginCategory;
 
   /**
    * Initialize the plugin with the core instance
    */
-  initialize(core: any): void {
+  initialize(core: ShogunCore): void {
     this.core = core;
     this.initialized = true;
   }
@@ -40,4 +44,4 @@ export abstract class BasePlugin {
       throw new Error(`Plugin ${this.name} is not initialized`);
     }
   }
-} 
+}

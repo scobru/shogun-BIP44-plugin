@@ -1,17 +1,24 @@
 import { log, logError, logWarn, EventEmitter } from "./utils";
-// @ts-ignore
-import "gun/sea";
-// @ts-ignore
-const SEA = (window as any).SEA || (global as any).SEA;
+// Import Gun/SEA with explicit handling to avoid webpack warnings
+let SEA: any;
+try {
+  // Try to import SEA directly
+  const gunModule = require("gun/sea");
+  SEA = gunModule.SEA || gunModule.default?.SEA;
+} catch (error) {
+  // Fallback to global SEA
+  SEA =
+    (typeof window !== "undefined" ? (window as any).SEA : null) ||
+    (typeof global !== "undefined" ? (global as any).SEA : null);
+}
+
 import { ethers } from "ethers";
 import {
   WalletPath,
   BalanceCache,
-  WalletExport,
   WalletConfig,
   WalletInfo,
   WalletEventType,
-  WalletEvent
 } from "./types";
 
 /**
@@ -558,13 +565,13 @@ export class HDWallet extends EventEmitter {
 
       // Use user SEA keys to encrypt
       const encrypted = await SEA.encrypt(text, user._.sea);
-      
+
       if (!encrypted) {
         throw new Error("Encryption failed - no result from SEA.encrypt");
       }
 
       // Validate that encryption actually worked by checking if result differs from input
-      if (typeof encrypted === 'string' && encrypted === text) {
+      if (typeof encrypted === "string" && encrypted === text) {
         throw new Error("Encryption failed - output same as input");
       }
 
@@ -573,10 +580,12 @@ export class HDWallet extends EventEmitter {
       return encryptedString;
     } catch (error) {
       logError("Critical error encrypting sensitive data:", error);
-      
+
       // NEVER save in clear text as fallback - this is a security vulnerability
       // Instead, throw the error to prevent unsafe storage
-      throw new Error(`Cannot save sensitive data: encryption failed - ${error}`);
+      throw new Error(
+        `Cannot save sensitive data: encryption failed - ${error}`
+      );
     }
   }
 
@@ -611,7 +620,7 @@ export class HDWallet extends EventEmitter {
 
       // Use user SEA keys to decrypt
       const decrypted = await SEA.decrypt(encryptedData, user._.sea);
-      
+
       if (!decrypted) {
         throw new Error("Decryption failed - no result from SEA.decrypt");
       }
@@ -651,7 +660,10 @@ export class HDWallet extends EventEmitter {
               resolved = true;
               clearTimeout(timeout);
               // Check if data is a string and looks like encrypted JSON before attempting to decrypt
-              if (typeof data === 'string' && (data.startsWith('{') || data.includes('"')) ) {
+              if (
+                typeof data === "string" &&
+                (data.startsWith("{") || data.includes('"'))
+              ) {
                 resolve(data || null);
               } else {
                 // Assume it's plain text if not a string or doesn't look like encrypted JSON
@@ -666,7 +678,7 @@ export class HDWallet extends EventEmitter {
           log("gunMnemonic: ", gunMnemonic);
           try {
             // Only attempt decryption if it looks like encrypted data
-            if (gunMnemonic.startsWith('{') || gunMnemonic.includes('"')) {
+            if (gunMnemonic.startsWith("{") || gunMnemonic.includes('"')) {
               const decrypted = await this.decryptSensitiveData(gunMnemonic);
               return decrypted;
             } else {
@@ -723,7 +735,7 @@ export class HDWallet extends EventEmitter {
    */
   async saveUserMasterMnemonic(mnemonic: string): Promise<void> {
     try {
-      if (!mnemonic || typeof mnemonic !== 'string') {
+      if (!mnemonic || typeof mnemonic !== "string") {
         throw new Error("Invalid mnemonic provided");
       }
 
@@ -739,7 +751,11 @@ export class HDWallet extends EventEmitter {
       }
 
       // Simulazione per i test
-      if (process.env.NODE_ENV === "test" && user.get && typeof user.get().put === "function") {
+      if (
+        process.env.NODE_ENV === "test" &&
+        user.get &&
+        typeof user.get().put === "function"
+      ) {
         await user.get().put({});
         return;
       }
@@ -750,7 +766,9 @@ export class HDWallet extends EventEmitter {
         encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
         log("Mnemonic encrypted successfully for GunDB storage");
       } catch (encryptError) {
-        throw new Error(`Failed to encrypt mnemonic for GunDB: ${encryptError}`);
+        throw new Error(
+          `Failed to encrypt mnemonic for GunDB: ${encryptError}`
+        );
       }
 
       // 2. Save encrypted mnemonic to GunDB
@@ -783,14 +801,15 @@ export class HDWallet extends EventEmitter {
       try {
         const verificationMnemonic = await this.getUserMasterMnemonic();
         if (verificationMnemonic !== mnemonic) {
-          throw new Error("Verification failed - saved mnemonic doesn't match original");
+          throw new Error(
+            "Verification failed - saved mnemonic doesn't match original"
+          );
         }
         log("Mnemonic save verification successful");
       } catch (verifyError) {
         logError("Verification failed:", verifyError);
         throw new Error(`Mnemonic save verification failed: ${verifyError}`);
       }
-
     } catch (error) {
       logError("Critical error saving mnemonic:", error);
       throw error;
@@ -805,7 +824,7 @@ export class HDWallet extends EventEmitter {
 
     const nextIndex = Object.keys(this.walletPaths).length;
     const path = `m/44'/60'/0'/0/${nextIndex}`;
-    
+
     let mnemonic = await this.getUserMasterMnemonic();
     if (!mnemonic) {
       mnemonic = this.generateNewMnemonic();
@@ -818,7 +837,7 @@ export class HDWallet extends EventEmitter {
     );
 
     this.walletPaths[wallet.address] = { path, created: Date.now() };
-    
+
     this.emit(WalletEventType.WALLET_CREATED, {
       type: WalletEventType.WALLET_CREATED,
       data: { address: wallet.address, path },
@@ -887,14 +906,14 @@ export class HDWallet extends EventEmitter {
     value: string
   ): Promise<string> {
     if (!this.provider) throw new Error("Provider not available");
-    
+
     const connectedWallet = wallet.connect(this.provider);
     const tx = {
       to: toAddress,
       value: ethers.parseEther(value),
       gasLimit: this.config.defaultGasLimit || 21000,
     };
-    
+
     return await connectedWallet.signTransaction(tx);
   }
 
@@ -912,11 +931,13 @@ export class HDWallet extends EventEmitter {
    */
   async exportWalletKeys(password?: string): Promise<string> {
     const wallets = await this.loadWallets();
-    return JSON.stringify(wallets.map(w => ({
-      address: w.address,
-      privateKey: w.wallet.privateKey,
-      path: w.path
-    })));
+    return JSON.stringify(
+      wallets.map((w) => ({
+        address: w.address,
+        privateKey: w.wallet.privateKey,
+        path: w.path,
+      }))
+    );
   }
 
   /**
@@ -935,7 +956,7 @@ export class HDWallet extends EventEmitter {
       mnemonic: await this.exportMnemonic(),
       walletKeys: await this.exportWalletKeys(),
       gunPair: await this.exportGunPair(),
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
     return JSON.stringify(data);
   }
@@ -943,7 +964,10 @@ export class HDWallet extends EventEmitter {
   /**
    * Import mnemonic with optional password decryption
    */
-  async importMnemonic(mnemonicData: string, password?: string): Promise<boolean> {
+  async importMnemonic(
+    mnemonicData: string,
+    password?: string
+  ): Promise<boolean> {
     await this.saveUserMasterMnemonic(mnemonicData);
     return true;
   }
@@ -951,11 +975,17 @@ export class HDWallet extends EventEmitter {
   /**
    * Import wallet keys with optional password decryption
    */
-  async importWalletKeys(walletsData: string, password?: string): Promise<number> {
+  async importWalletKeys(
+    walletsData: string,
+    password?: string
+  ): Promise<number> {
     const wallets = JSON.parse(walletsData);
     let count = 0;
     for (const wallet of wallets) {
-      this.walletPaths[wallet.address] = { path: wallet.path, created: Date.now() };
+      this.walletPaths[wallet.address] = {
+        path: wallet.path,
+        created: Date.now(),
+      };
       count++;
     }
     return count;
@@ -988,9 +1018,15 @@ export class HDWallet extends EventEmitter {
     const data = JSON.parse(backupData);
     return {
       success: true,
-      mnemonicImported: data.mnemonic ? await this.importMnemonic(data.mnemonic) : false,
-      walletsImported: data.walletKeys ? await this.importWalletKeys(data.walletKeys) : 0,
-      gunPairImported: data.gunPair ? await this.importGunPair(data.gunPair) : false,
+      mnemonicImported: data.mnemonic
+        ? await this.importMnemonic(data.mnemonic)
+        : false,
+      walletsImported: data.walletKeys
+        ? await this.importWalletKeys(data.walletKeys)
+        : 0,
+      gunPairImported: data.gunPair
+        ? await this.importGunPair(data.gunPair)
+        : false,
     };
   }
 
@@ -1007,7 +1043,7 @@ export class HDWallet extends EventEmitter {
       }
 
       const testData = "test-encryption-data-" + Date.now();
-      
+
       // Test encryption
       const encrypted = await this.encryptSensitiveData(testData);
       if (!encrypted || encrypted.includes(testData)) {
@@ -1038,8 +1074,13 @@ export class HDWallet extends EventEmitter {
       await this.initializeWalletPaths();
       await this.testEncryptionSystem();
     } catch (error) {
-      logError("Error initializing wallet paths and testing encryption:", error);
-      throw new Error(`Failed to initialize wallet paths and test encryption: ${error instanceof Error ? error.message : String(error)}`);
+      logError(
+        "Error initializing wallet paths and testing encryption:",
+        error
+      );
+      throw new Error(
+        `Failed to initialize wallet paths and test encryption: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
-} 
+}
