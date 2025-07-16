@@ -1,17 +1,7 @@
 import { log, logError, logWarn, EventEmitter } from "./utils";
-// Import Gun/SEA with explicit handling to avoid webpack warnings
-let SEA: any;
-try {
-  // Try to import SEA directly
-  const gunModule = require("gun/sea");
-  SEA = gunModule.SEA || gunModule.default?.SEA;
-} catch (error) {
-  // Fallback to global SEA
-  SEA =
-    (typeof window !== "undefined" ? (window as any).SEA : null) ||
-    (typeof global !== "undefined" ? (global as any).SEA : null);
-}
-
+// @ts-ignore
+import { SEA } from "shogun-core";
+// @ts-ignore
 import { ethers } from "ethers";
 import {
   WalletPath,
