@@ -94,8 +94,19 @@ export class HDWallet extends EventEmitter {
       // Load paths from localStorage as fallback
       this.loadWalletPathsFromLocalStorage();
 
-      // Log results
+      // If we found paths in localStorage that weren't in GunDB, save them to GunDB
       const walletCount = Object.keys(this.walletPaths).length;
+      if (walletCount > 0) {
+        try {
+          await this.saveWalletPathsToGun();
+          log("Synced wallet paths from localStorage to GunDB");
+        } catch (error) {
+          logError("Error syncing wallet paths to GunDB:", error);
+          // Don't fail initialization if sync fails
+        }
+      }
+
+      // Log results
       if (walletCount === 0) {
         log("No wallet paths found, new wallets will be created when needed");
       } else {
@@ -152,36 +163,73 @@ export class HDWallet extends EventEmitter {
 
     log(`Loading wallet paths from GUN for user: ${user.is.alias}`);
 
-    // Load paths from user profile
+    // Load paths from user profile using shogun node
     return new Promise<void>((resolve) => {
-      user.get("wallet_paths").once((data: any) => {
-        if (!data) {
-          log("No wallet paths found in GUN");
-          resolve();
-          return;
-        }
-
-        log(
-          `Found wallet paths in GUN: ${Object.keys(data).length - 1} wallets`
-        ); // -1 for _ field
-
-        // Convert GUN data to walletPaths
-        Object.entries(data).forEach(([address, pathData]) => {
-          if (address !== "_" && pathData) {
-            const data = pathData as any;
-            if (data?.path) {
-              this.walletPaths[address] = {
-                path: data.path,
-                created: data.created || Date.now(),
-              };
-              log(`Loaded path for wallet: ${address} -> ${data.path}`);
-            }
+      user
+        .get("shogun")
+        .get("wallet_paths")
+        .once((data: any) => {
+          if (!data) {
+            log("No wallet paths found in GUN");
+            resolve();
+            return;
           }
-        });
 
-        resolve();
-      });
+          log(
+            `Found wallet paths in GUN: ${Object.keys(data).length - 1} wallets`
+          ); // -1 for _ field
+
+          // Convert GUN data to walletPaths
+          Object.entries(data).forEach(([address, pathData]) => {
+            if (address !== "_" && pathData) {
+              const data = pathData as any;
+              if (data?.path) {
+                this.walletPaths[address] = {
+                  path: data.path,
+                  created: data.created || Date.now(),
+                };
+                log(`Loaded path for wallet: ${address} -> ${data.path}`);
+              }
+            }
+          });
+
+          resolve();
+        });
     });
+  }
+
+  /**
+   * Saves wallet paths to GunDB using shogun node
+   * @private
+   */
+  private async saveWalletPathsToGun(): Promise<void> {
+    const user = this.gun.user();
+    if (!user?.is) {
+      log("User not authenticated, cannot save wallet paths to GunDB");
+      return;
+    }
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        user
+          .get("shogun")
+          .get("wallet_paths")
+          .put(this.walletPaths, (ack: any) => {
+            if (ack.err) {
+              logError("Error saving wallet paths to GunDB:", ack.err);
+              reject(new Error(`GunDB save failed: ${ack.err}`));
+            } else {
+              log(
+                `Saved ${Object.keys(this.walletPaths).length} wallet paths to GunDB`
+              );
+              resolve();
+            }
+          });
+      });
+    } catch (error) {
+      logError("Error saving wallet paths to GunDB:", error);
+      throw error;
+    }
   }
 
   /**
@@ -645,22 +693,25 @@ export class HDWallet extends EventEmitter {
             }
           }, 5000); // 5 second timeout
 
-          user.get("master_mnemonic").once((data: any) => {
-            if (!resolved) {
-              resolved = true;
-              clearTimeout(timeout);
-              // Check if data is a string and looks like encrypted JSON before attempting to decrypt
-              if (
-                typeof data === "string" &&
-                (data.startsWith("{") || data.includes('"'))
-              ) {
-                resolve(data || null);
-              } else {
-                // Assume it's plain text if not a string or doesn't look like encrypted JSON
-                resolve(data || null);
+          user
+            .get("shogun")
+            .get("master_mnemonic")
+            .once((data: any) => {
+              if (!resolved) {
+                resolved = true;
+                clearTimeout(timeout);
+                // Check if data is a string and looks like encrypted JSON before attempting to decrypt
+                if (
+                  typeof data === "string" &&
+                  (data.startsWith("{") || data.includes('"'))
+                ) {
+                  resolve(data || null);
+                } else {
+                  // Assume it's plain text if not a string or doesn't look like encrypted JSON
+                  resolve(data || null);
+                }
               }
-            }
-          });
+            });
         });
 
         if (gunMnemonic) {
@@ -700,7 +751,7 @@ export class HDWallet extends EventEmitter {
         // for future syncing (but only if user is authenticated)
         if (decrypted && user && user.is) {
           try {
-            await user.get("master_mnemonic").put(decrypted);
+            await user.get("shogun").get("master_mnemonic").put(decrypted);
             log("Mnemonic from localStorage synced to GunDB");
           } catch (syncError) {
             logError("Error syncing mnemonic to GunDB:", syncError);
@@ -764,14 +815,17 @@ export class HDWallet extends EventEmitter {
       // 2. Save encrypted mnemonic to GunDB
       try {
         await new Promise<void>((resolve, reject) => {
-          user.get("master_mnemonic").put(encryptedMnemonic, (ack: any) => {
-            if (ack.err) {
-              reject(new Error(`GunDB save failed: ${ack.err}`));
-            } else {
-              log("Encrypted mnemonic saved to GunDB successfully");
-              resolve();
-            }
-          });
+          user
+            .get("shogun")
+            .get("master_mnemonic")
+            .put(encryptedMnemonic, (ack: any) => {
+              if (ack.err) {
+                reject(new Error(`GunDB save failed: ${ack.err}`));
+              } else {
+                log("Encrypted mnemonic saved to GunDB successfully");
+                resolve();
+              }
+            });
         });
       } catch (gunError) {
         throw new Error(`Failed to save to GunDB: ${gunError}`);
@@ -827,6 +881,17 @@ export class HDWallet extends EventEmitter {
     );
 
     this.walletPaths[wallet.address] = { path, created: Date.now() };
+
+    // Save wallet paths to GunDB
+    try {
+      await this.saveWalletPathsToGun();
+    } catch (error) {
+      logError("Error saving wallet paths to GunDB:", error);
+      // Don't fail the wallet creation if GunDB save fails
+    }
+
+    // Also save to localStorage as backup
+    this.saveWalletPathsToLocalStorage();
 
     this.emit(WalletEventType.WALLET_CREATED, {
       type: WalletEventType.WALLET_CREATED,
@@ -978,6 +1043,18 @@ export class HDWallet extends EventEmitter {
       };
       count++;
     }
+
+    // Save imported wallet paths to GunDB
+    try {
+      await this.saveWalletPathsToGun();
+    } catch (error) {
+      logError("Error saving imported wallet paths to GunDB:", error);
+      // Don't fail the import if GunDB save fails
+    }
+
+    // Also save to localStorage as backup
+    this.saveWalletPathsToLocalStorage();
+
     return count;
   }
 
