@@ -23,6 +23,7 @@ export class HDWallet extends EventEmitter {
   private walletPaths: {
     [address: string]: WalletPath;
   } = {};
+  private walletPathsInitialized = false; // Flag per evitare reinizializzazioni multiple
   private mainWallet: ethers.Wallet | null = null;
   private readonly balanceCache: Map<string, BalanceCache> = new Map();
   private readonly pendingTransactions: Map<
@@ -84,9 +85,18 @@ export class HDWallet extends EventEmitter {
    * @throws {Error} If there's an error during wallet path initialization
    */
   async initializeWalletPaths(): Promise<void> {
+    // Evita reinizializzazioni multiple
+    if (this.walletPathsInitialized) {
+      log("[initializeWalletPaths] Wallet paths already initialized, skipping");
+      return;
+    }
+
     try {
+      log("[initializeWalletPaths] Starting wallet paths initialization");
+
       // Reset existing paths
       this.walletPaths = {};
+      log("[initializeWalletPaths] Reset walletPaths object");
 
       // Load paths from Gun
       await this.loadWalletPathsFromGun();
@@ -105,6 +115,12 @@ export class HDWallet extends EventEmitter {
           // Don't fail initialization if sync fails
         }
       }
+
+      // Mark as initialized
+      this.walletPathsInitialized = true;
+      log(
+        `[initializeWalletPaths] Initialization complete. Wallet count: ${walletCount}`
+      );
 
       // Log results
       if (walletCount === 0) {
@@ -254,6 +270,10 @@ export class HDWallet extends EventEmitter {
       this.transactionMonitoringInterval = null;
     }
 
+    // Reset initialization flag
+    this.walletPathsInitialized = false;
+    log("[cleanup] Reset walletPathsInitialized flag");
+
     // Pulisci eventuali altri timer
     const globalObj = typeof window !== "undefined" ? window : global;
     const highestTimeoutId = Number(setTimeout(() => {}, 0));
@@ -261,6 +281,18 @@ export class HDWallet extends EventEmitter {
       clearTimeout(i);
       clearInterval(i);
     }
+  }
+
+  /**
+   * Reset wallet paths initialization state
+   * Call this when user logs out or when you need to force re-initialization
+   */
+  resetWalletPathsInitialization(): void {
+    this.walletPathsInitialized = false;
+    this.walletPaths = {};
+    log(
+      "[resetWalletPathsInitialization] Reset wallet paths initialization state"
+    );
   }
 
   /**
@@ -679,6 +711,10 @@ export class HDWallet extends EventEmitter {
       // 1. First check GunDB (automatically encrypted by SEA)
       const user = this.gun.user();
       if (user && user.is) {
+        log(
+          `Attempting to retrieve mnemonic from GunDB for user: ${user.is.alias || user.is.pub}`
+        );
+
         const gunMnemonic = await new Promise<string | null>((resolve) => {
           let resolved = false;
 
@@ -700,15 +736,26 @@ export class HDWallet extends EventEmitter {
               if (!resolved) {
                 resolved = true;
                 clearTimeout(timeout);
-                // Check if data is a string and looks like encrypted JSON before attempting to decrypt
-                if (
-                  typeof data === "string" &&
-                  (data.startsWith("{") || data.includes('"'))
-                ) {
-                  resolve(data || null);
+
+                if (data) {
+                  log(
+                    "Data received from GunDB:",
+                    typeof data,
+                    data ? "has data" : "no data"
+                  );
+                  // Check if data is a string and looks like encrypted JSON before attempting to decrypt
+                  if (
+                    typeof data === "string" &&
+                    (data.startsWith("{") || data.includes('"'))
+                  ) {
+                    resolve(data);
+                  } else {
+                    // Assume it's plain text if not a string or doesn't look like encrypted JSON
+                    resolve(data);
+                  }
                 } else {
-                  // Assume it's plain text if not a string or doesn't look like encrypted JSON
-                  resolve(data || null);
+                  log("No data received from GunDB");
+                  resolve(null);
                 }
               }
             });
@@ -716,24 +763,42 @@ export class HDWallet extends EventEmitter {
 
         if (gunMnemonic) {
           log("Mnemonic retrieved from GunDB");
-          log("gunMnemonic: ", gunMnemonic);
+          log("gunMnemonic type:", typeof gunMnemonic);
+          log("gunMnemonic length:", gunMnemonic.length);
+
           try {
             // Only attempt decryption if it looks like encrypted data
             if (gunMnemonic.startsWith("{") || gunMnemonic.includes('"')) {
+              log("Attempting to decrypt GunDB mnemonic...");
               const decrypted = await this.decryptSensitiveData(gunMnemonic);
-              return decrypted;
+              if (decrypted) {
+                log("Successfully decrypted mnemonic from GunDB");
+                // Sync to localStorage as backup
+                await this.syncMnemonicToLocalStorage(decrypted);
+                return decrypted;
+              } else {
+                logError("Failed to decrypt mnemonic from GunDB");
+              }
             } else {
               // If it's plain text, return directly
+              log("GunDB mnemonic appears to be plain text");
+              // Sync to localStorage as backup
+              await this.syncMnemonicToLocalStorage(gunMnemonic);
               return gunMnemonic;
             }
           } catch (decryptError) {
             logError("Error decrypting mnemonic from GunDB:", decryptError);
             log("Falling back to localStorage");
           }
+        } else {
+          log("No mnemonic found in GunDB");
         }
+      } else {
+        log("User not authenticated, cannot check GunDB");
       }
 
       // 2. If not found in GunDB, check localStorage
+      log("Checking localStorage for mnemonic...");
       const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
       const encryptedMnemonic = localStorage.getItem(storageKey);
 
@@ -741,6 +806,8 @@ export class HDWallet extends EventEmitter {
         log("No mnemonic found in either GunDB or localStorage");
         return null;
       }
+
+      log("Found encrypted mnemonic in localStorage");
 
       // Decrypt mnemonic from localStorage
       try {
@@ -751,7 +818,7 @@ export class HDWallet extends EventEmitter {
         // for future syncing (but only if user is authenticated)
         if (decrypted && user && user.is) {
           try {
-            await user.get("shogun").get("master_mnemonic").put(decrypted);
+            await this.syncMnemonicToGunDB(decrypted);
             log("Mnemonic from localStorage synced to GunDB");
           } catch (syncError) {
             logError("Error syncing mnemonic to GunDB:", syncError);
@@ -771,6 +838,52 @@ export class HDWallet extends EventEmitter {
   }
 
   /**
+   * Sync mnemonic to localStorage as backup
+   * @private
+   */
+  private async syncMnemonicToLocalStorage(mnemonic: string): Promise<void> {
+    try {
+      const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
+      const encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
+      localStorage.setItem(storageKey, encryptedMnemonic);
+      log("Mnemonic synced to localStorage as backup");
+    } catch (error) {
+      logError("Error syncing mnemonic to localStorage:", error);
+    }
+  }
+
+  /**
+   * Sync mnemonic to GunDB
+   * @private
+   */
+  private async syncMnemonicToGunDB(mnemonic: string): Promise<void> {
+    try {
+      const user = this.gun.user();
+      if (!user || !user.is) {
+        throw new Error("User not authenticated");
+      }
+
+      const encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
+      await new Promise<void>((resolve, reject) => {
+        user
+          .get("shogun")
+          .get("master_mnemonic")
+          .put(encryptedMnemonic, (ack: any) => {
+            if (ack.err) {
+              reject(new Error(`GunDB sync failed: ${ack.err}`));
+            } else {
+              log("Mnemonic synced to GunDB successfully");
+              resolve();
+            }
+          });
+      });
+    } catch (error) {
+      logError("Error syncing mnemonic to GunDB:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Save user's master mnemonic to both GunDB and localStorage
    * CRITICAL: Always encrypts the mnemonic before storage
    */
@@ -785,6 +898,8 @@ export class HDWallet extends EventEmitter {
       if (words.length < 12 || words.length > 24) {
         throw new Error("Invalid mnemonic length");
       }
+
+      log(`Saving mnemonic for user: ${this.getStorageUserIdentifier()}`);
 
       const user = this.gun.user();
       if (!user || !user.is) {
@@ -801,48 +916,27 @@ export class HDWallet extends EventEmitter {
         return;
       }
 
-      // 1. Encrypt mnemonic before saving to GunDB
-      let encryptedMnemonic: string;
+      // 1. Save to GunDB first
       try {
-        encryptedMnemonic = await this.encryptSensitiveData(mnemonic);
-        log("Mnemonic encrypted successfully for GunDB storage");
-      } catch (encryptError) {
-        throw new Error(
-          `Failed to encrypt mnemonic for GunDB: ${encryptError}`
-        );
-      }
-
-      // 2. Save encrypted mnemonic to GunDB
-      try {
-        await new Promise<void>((resolve, reject) => {
-          user
-            .get("shogun")
-            .get("master_mnemonic")
-            .put(encryptedMnemonic, (ack: any) => {
-              if (ack.err) {
-                reject(new Error(`GunDB save failed: ${ack.err}`));
-              } else {
-                log("Encrypted mnemonic saved to GunDB successfully");
-                resolve();
-              }
-            });
-        });
+        await this.syncMnemonicToGunDB(mnemonic);
+        log("Mnemonic saved to GunDB successfully");
       } catch (gunError) {
+        logError("Failed to save to GunDB:", gunError);
         throw new Error(`Failed to save to GunDB: ${gunError}`);
       }
 
-      // 3. Also save encrypted mnemonic to localStorage as backup
+      // 2. Save to localStorage as backup
       try {
-        const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
-        localStorage.setItem(storageKey, encryptedMnemonic);
-        log("Encrypted mnemonic saved to localStorage as backup");
+        await this.syncMnemonicToLocalStorage(mnemonic);
+        log("Mnemonic saved to localStorage as backup");
       } catch (storageError) {
         logWarn("Failed to save to localStorage backup:", storageError);
         // Don't fail the entire operation if localStorage fails
       }
 
-      // 4. Verification: try to read back and decrypt to ensure it worked
+      // 3. Verification: try to read back and decrypt to ensure it worked
       try {
+        log("Verifying mnemonic save...");
         const verificationMnemonic = await this.getUserMasterMnemonic();
         if (verificationMnemonic !== mnemonic) {
           throw new Error(
@@ -866,13 +960,46 @@ export class HDWallet extends EventEmitter {
       throw new Error("User not authenticated");
     }
 
+    // Assicurati che i wallet paths siano inizializzati
+    if (!this.walletPathsInitialized) {
+      log("[createWallet] Wallet paths not initialized, initializing now...");
+      await this.initializeWalletPaths();
+    }
+
     const nextIndex = Object.keys(this.walletPaths).length;
     const path = `m/44'/60'/0'/0/${nextIndex}`;
 
+    log(`[createWallet] Creating wallet with path: ${path}`);
+    log(
+      `[createWallet] Current wallet paths count: ${Object.keys(this.walletPaths).length}`
+    );
+
     let mnemonic = await this.getUserMasterMnemonic();
+    log(`[createWallet] Retrieved mnemonic: ${mnemonic ? "EXISTS" : "NULL"}`);
+
     if (!mnemonic) {
+      // Check if there are existing wallet paths - if so, we shouldn't generate a new mnemonic
+      const existingWalletCount = Object.keys(this.walletPaths).length;
+      if (existingWalletCount > 0) {
+        log(
+          `[createWallet] ERROR: Found ${existingWalletCount} existing wallet paths but no mnemonic! This indicates a data corruption issue.`
+        );
+        throw new Error(
+          `Data corruption detected: Found ${existingWalletCount} wallet paths but no mnemonic. Please restore from backup.`
+        );
+      }
+
+      log(`[createWallet] WARNING: No mnemonic found, generating new one!`);
       mnemonic = this.generateNewMnemonic();
+      log(
+        `[createWallet] Generated new mnemonic: ${mnemonic.substring(0, 20)}...`
+      );
       await this.saveUserMasterMnemonic(mnemonic);
+      log(`[createWallet] Saved new mnemonic to storage`);
+    } else {
+      log(
+        `[createWallet] Using existing mnemonic: ${mnemonic.substring(0, 20)}...`
+      );
     }
 
     const wallet = ethers.HDNodeWallet.fromMnemonic(
@@ -908,6 +1035,12 @@ export class HDWallet extends EventEmitter {
   }
 
   async loadWallets(): Promise<WalletInfo[]> {
+    // Assicurati che i wallet paths siano inizializzati
+    if (!this.walletPathsInitialized) {
+      log("[loadWallets] Wallet paths not initialized, initializing now...");
+      await this.initializeWalletPaths();
+    }
+
     const mnemonic = await this.getUserMasterMnemonic();
     if (!mnemonic) return [];
 
@@ -1149,5 +1282,140 @@ export class HDWallet extends EventEmitter {
         `Failed to initialize wallet paths and test encryption: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Force synchronization of mnemonic between GunDB and localStorage
+   * This is useful when localStorage is cleared and you want to restore from GunDB
+   */
+  async forceMnemonicSync(): Promise<boolean> {
+    try {
+      log("Forcing mnemonic synchronization...");
+
+      const user = this.gun.user();
+      if (!user || !user.is) {
+        logError("Cannot sync mnemonic: user not authenticated");
+        return false;
+      }
+
+      // First try to get mnemonic from GunDB
+      const gunMnemonic = await new Promise<string | null>((resolve) => {
+        let resolved = false;
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve(null);
+          }
+        }, 5000);
+
+        user
+          .get("shogun")
+          .get("master_mnemonic")
+          .once((data: any) => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              resolve(data || null);
+            }
+          });
+      });
+
+      if (gunMnemonic) {
+        log("Found mnemonic in GunDB, syncing to localStorage...");
+        try {
+          let decryptedMnemonic: string;
+
+          if (gunMnemonic.startsWith("{") || gunMnemonic.includes('"')) {
+            decryptedMnemonic =
+              (await this.decryptSensitiveData(gunMnemonic)) || "";
+          } else {
+            decryptedMnemonic = gunMnemonic;
+          }
+
+          if (decryptedMnemonic) {
+            await this.syncMnemonicToLocalStorage(decryptedMnemonic);
+            log("Mnemonic successfully synced from GunDB to localStorage");
+            return true;
+          }
+        } catch (error) {
+          logError("Error syncing mnemonic from GunDB:", error);
+        }
+      }
+
+      // If not in GunDB, try localStorage
+      const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
+      const localStorageMnemonic = localStorage.getItem(storageKey);
+
+      if (localStorageMnemonic) {
+        log("Found mnemonic in localStorage, syncing to GunDB...");
+        try {
+          const decryptedMnemonic =
+            await this.decryptSensitiveData(localStorageMnemonic);
+          if (decryptedMnemonic) {
+            await this.syncMnemonicToGunDB(decryptedMnemonic);
+            log("Mnemonic successfully synced from localStorage to GunDB");
+            return true;
+          }
+        } catch (error) {
+          logError("Error syncing mnemonic from localStorage:", error);
+        }
+      }
+
+      log("No mnemonic found in either GunDB or localStorage");
+      return false;
+    } catch (error) {
+      logError("Error during mnemonic sync:", error);
+      return false;
+    }
+  }
+
+  /**
+   * Get current mnemonic status (where it's stored)
+   */
+  async getMnemonicStatus(): Promise<{
+    hasGunDB: boolean;
+    hasLocalStorage: boolean;
+    isSynced: boolean;
+  }> {
+    const user = this.gun.user();
+    const hasUser = !!(user && user.is);
+
+    let hasGunDB = false;
+    let hasLocalStorage = false;
+
+    if (hasUser) {
+      // Check GunDB
+      const gunMnemonic = await new Promise<string | null>((resolve) => {
+        let resolved = false;
+        const timeout = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            resolve(null);
+          }
+        }, 3000);
+
+        user
+          .get("shogun")
+          .get("master_mnemonic")
+          .once((data: any) => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              resolve(data || null);
+            }
+          });
+      });
+      hasGunDB = !!gunMnemonic;
+    }
+
+    // Check localStorage
+    const storageKey = `shogun_master_mnemonic_${this.getStorageUserIdentifier()}`;
+    hasLocalStorage = !!localStorage.getItem(storageKey);
+
+    return {
+      hasGunDB,
+      hasLocalStorage,
+      isSynced: hasGunDB && hasLocalStorage,
+    };
   }
 }

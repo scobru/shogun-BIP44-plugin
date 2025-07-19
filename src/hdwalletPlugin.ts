@@ -395,6 +395,36 @@ export class HDWalletPlugin
   }
 
   /**
+   * Force synchronization of mnemonic between GunDB and localStorage
+   * @returns Promise resolving to sync success status
+   */
+  async forceMnemonicSync(): Promise<boolean> {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      return false;
+    }
+
+    return await this.hdWallet.forceMnemonicSync();
+  }
+
+  /**
+   * Get current mnemonic status (where it's stored)
+   * @returns Promise with mnemonic status information
+   */
+  async getMnemonicStatus(): Promise<{
+    hasGunDB: boolean;
+    hasLocalStorage: boolean;
+    isSynced: boolean;
+  }> {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      return { hasGunDB: false, hasLocalStorage: false, isSynced: false };
+    }
+
+    return await this.hdWallet.getMnemonicStatus();
+  }
+
+  /**
    * Get current wallet configuration
    * @returns Wallet configuration
    */
@@ -407,25 +437,38 @@ export class HDWalletPlugin
    * @param config Partial new configuration
    */
   updateWalletConfig(config: Partial<WalletConfig>): void {
-    this.walletConfig = { ...this.walletConfig, ...config };
-
-    // If already initialized, also update HDWallet
-    if (this.hdWallet && config.rpcUrl) {
-      this.hdWallet.setRpcUrl(config.rpcUrl);
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      throw new Error("HDWallet not available");
     }
 
-    log("Wallet configuration updated");
+    this.walletConfig = { ...this.walletConfig, ...config };
   }
 
   /**
-   * Set RPC URL and update configuration
-   * @param rpcUrl New RPC URL
+   * Reset wallet paths initialization state
+   * Call this when user logs out or when you need to force re-initialization
+   */
+  resetWalletPathsInitialization(): void {
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      throw new Error("HDWallet not available");
+    }
+
+    this.hdWallet.resetWalletPathsInitialization();
+  }
+
+  /**
+   * Set RPC URL and update config
    */
   setRpcUrlAndUpdateConfig(rpcUrl: string): boolean {
-    const success = this.setRpcUrl(rpcUrl);
-    if (success) {
-      this.updateWalletConfig({ rpcUrl });
+    this.assertInitialized();
+    if (!this.hdWallet) {
+      return false;
     }
-    return success;
+
+    this.hdWallet.setRpcUrl(rpcUrl);
+    this.walletConfig.rpcUrl = rpcUrl;
+    return true;
   }
 }

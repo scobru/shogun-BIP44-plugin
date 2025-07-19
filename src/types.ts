@@ -103,7 +103,7 @@ export enum WalletEventType {
   BALANCE_UPDATED = "balanceUpdated",
   TRANSACTION_SENT = "transactionSent",
   TRANSACTION_CONFIRMED = "transactionConfirmed",
-  ERROR = "error"
+  ERROR = "error",
 }
 
 /**
@@ -221,4 +221,26 @@ export interface HDWalletPluginInterface {
    * @returns L'URL del provider corrente o null se non impostato
    */
   getRpcUrl(): string | null;
-} 
+
+  /**
+   * Ottiene la mnemonic master dell'utente
+   * @returns Promise con la mnemonic o null se non disponibile
+   */
+  getUserMasterMnemonic(): Promise<string | null>;
+
+  /**
+   * Forza la sincronizzazione della mnemonic tra GunDB e localStorage
+   * @returns Promise che risolve con lo stato di successo della sincronizzazione
+   */
+  forceMnemonicSync(): Promise<boolean>;
+
+  /**
+   * Ottiene lo stato corrente della mnemonic (dove è memorizzata)
+   * @returns Promise con informazioni sullo stato della mnemonic
+   */
+  getMnemonicStatus(): Promise<{
+    hasGunDB: boolean;
+    hasLocalStorage: boolean;
+    isSynced: boolean;
+  }>;
+}
