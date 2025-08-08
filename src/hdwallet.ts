@@ -23,7 +23,7 @@ export class HDWallet extends EventEmitter {
   private walletPaths: {
     [address: string]: WalletPath;
   } = {};
-  private walletPathsInitialized = false; // Flag per evitare reinizializzazioni multiple
+  private walletPathsInitialized = false; // Flag to avoid multiple reinitializations
   private mainWallet: ethers.Wallet | null = null;
   private readonly balanceCache: Map<string, BalanceCache> = new Map();
   private readonly pendingTransactions: Map<
@@ -85,7 +85,7 @@ export class HDWallet extends EventEmitter {
    * @throws {Error} If there's an error during wallet path initialization
    */
   async initializeWalletPaths(): Promise<void> {
-    // Evita reinizializzazioni multiple
+    // Avoid multiple reinitializations
     if (this.walletPathsInitialized) {
       log("[initializeWalletPaths] Wallet paths already initialized, skipping");
       return;
@@ -130,7 +130,7 @@ export class HDWallet extends EventEmitter {
       }
     } catch (error) {
       logError("Error initializing wallet paths:", error);
-      // Propagare l'errore invece di sopprimerlo
+      // Propagate the error instead of suppressing it
       throw new Error(
         `Failed to initialize wallet paths: ${
           error instanceof Error ? error.message : String(error)
@@ -252,7 +252,7 @@ export class HDWallet extends EventEmitter {
    * Setup transaction monitoring
    */
   private setupTransactionMonitoring(): void {
-    // Non creare intervalli quando è in esecuzione in ambiente di test
+    // Do not create intervals when running in a test environment
     if (process.env.NODE_ENV === "test") {
       return;
     }
@@ -273,14 +273,6 @@ export class HDWallet extends EventEmitter {
     // Reset initialization flag
     this.walletPathsInitialized = false;
     log("[cleanup] Reset walletPathsInitialized flag");
-
-    // Pulisci eventuali altri timer
-    const globalObj = typeof window !== "undefined" ? window : global;
-    const highestTimeoutId = Number(setTimeout(() => {}, 0));
-    for (let i = 0; i < highestTimeoutId; i++) {
-      clearTimeout(i);
-      clearInterval(i);
-    }
   }
 
   /**
@@ -302,7 +294,7 @@ export class HDWallet extends EventEmitter {
     const provider = this.getProvider();
     if (!provider) {
       logWarn(
-        "Provider non disponibile, impossibile controllare transazioni pendenti"
+        "Provider not available, cannot check pending transactions"
       );
       return;
     }
@@ -313,7 +305,7 @@ export class HDWallet extends EventEmitter {
 
         if (receipt) {
           if (receipt.status === 1) {
-            // Aggiorniamo lo stato della transazione prima dell'emissione dell'evento
+            // Update transaction status before emitting the event
             if (tx && typeof tx === "object") {
               (tx as any).status = "success";
             }
@@ -324,7 +316,7 @@ export class HDWallet extends EventEmitter {
               timestamp: Date.now(),
             });
           } else {
-            // Aggiorniamo lo stato della transazione prima dell'emissione dell'evento
+            // Update transaction status before emitting the event
             if (tx && typeof tx === "object") {
               (tx as any).status = "failed";
             }
@@ -365,6 +357,14 @@ export class HDWallet extends EventEmitter {
    */
   getProvider(): ethers.JsonRpcProvider | null {
     return this.provider;
+  }
+
+  /**
+   * Gets the configured RPC URL
+   * @returns The RPC URL or null if not configured
+   */
+  getRpcUrl(): string | null {
+    return this.config.rpcUrl || null;
   }
 
   getSigner(): ethers.Wallet {
@@ -451,7 +451,10 @@ export class HDWallet extends EventEmitter {
    */
   generateNewMnemonic(): string {
     const wallet = ethers.Wallet.createRandom();
-    return wallet.mnemonic?.phrase || "test phrase for development";
+    if (!wallet.mnemonic?.phrase) {
+      throw new Error("Failed to generate new mnemonic");
+    }
+    return wallet.mnemonic.phrase;
   }
 
   /**
@@ -475,69 +478,24 @@ export class HDWallet extends EventEmitter {
   }
 
   /**
-   * Override of main function with fixes and improvements
+   * Securely generates a private key from a string input.
+   * @param input The input string to generate the private key from.
+   * @returns A securely generated private key.
    */
   private generatePrivateKeyFromString(input: string): string {
     try {
-      // Use SHA-256 to generate a deterministic hash value
+      // Encode the input string to UTF-8 bytes
       const encoder = new TextEncoder();
       const data = encoder.encode(input);
 
-      // Use simplified digestSync method
-      const digestSync = (data: Uint8Array): Uint8Array => {
-        // Simplified version
-        let h1 = 0xdeadbeef,
-          h2 = 0x41c6ce57;
-        for (let i = 0; i < data.length; i++) {
-          h1 = Math.imul(h1 ^ data[i], 2654435761);
-          h2 = Math.imul(h2 ^ data[i], 1597334677);
-        }
-        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-        h1 = Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-        h2 = Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-
-        // Create a 32-byte array
-        const out = new Uint8Array(32);
-        for (let i = 0; i < 4; i++) {
-          out[i] = (h1 >> (8 * i)) & 0xff;
-        }
-        for (let i = 0; i < 4; i++) {
-          out[i + 4] = (h2 >> (8 * i)) & 0xff;
-        }
-        // Fill with derived values
-        for (let i = 8; i < 32; i++) {
-          out[i] = (out[i % 8] ^ out[(i - 1) % 8]) & 0xff;
-        }
-        return out;
-      };
-
-      // Use synchronous version of digest
-      const hashArray = digestSync(data);
-
-      // Convert to hex string
-      const privateKey =
-        "0x" +
-        Array.from(hashArray)
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("");
+      // Use a standard and secure hash function (SHA-256)
+      const privateKey = ethers.sha256(data);
 
       return privateKey;
     } catch (error) {
       logError("Error generating private key:", error);
-
-      // Fallback: create valid hex value
-      const fallbackHex =
-        "0x" +
-        Array.from({ length: 32 })
-          .map(() =>
-            Math.floor(Math.random() * 256)
-              .toString(16)
-              .padStart(2, "0")
-          )
-          .join("");
-
-      return fallbackHex;
+      // It's better to throw an error than to return an insecure fallback
+      throw new Error("Failed to generate private key");
     }
   }
 
@@ -586,39 +544,8 @@ export class HDWallet extends EventEmitter {
    * Get the main wallet credentials
    */
   getMainWalletCredentials(): { address: string; priv: string } {
-    const user = this.gun.user().recall({ sessionStorage: true });
-    if (!user || !user.is) {
-      log("getMainWallet: User not authenticated");
-      throw new Error("User not authenticated");
-    }
-
-    // Check if we have access to required properties
-    if (!user._ || !user._.sea || !user._.sea.priv || !user._.sea.pub) {
-      log(
-        "getMainWallet: Insufficient user data",
-        JSON.stringify({
-          hasUserData: !!user._,
-          hasSea: !!(user._ && user._.sea),
-          hasPriv: !!(user._ && user._.sea && user._.sea.priv),
-          hasPub: !!(user._ && user._.sea && user._.sea.pub),
-        })
-      );
-
-      throw new Error("Insufficient user data to generate wallet");
-    }
-
-    const userSeed = user._.sea.priv;
-    const userPub = user._.sea.pub;
-    const userAlias = user.is.alias;
-
-    // Create unique seed for this user
-    const seed = `${userSeed}|${userPub}|${userAlias}`;
-
-    // Use new secure method to generate private key
-    const privateKey = this.generatePrivateKeyFromString(seed);
-    this.mainWallet = new ethers.Wallet(privateKey);
-
-    return { address: this.mainWallet.address, priv: privateKey };
+    const wallet = this.getMainWallet();
+    return { address: wallet.address, priv: wallet.privateKey };
   }
 
   /**
@@ -906,15 +833,6 @@ export class HDWallet extends EventEmitter {
         throw new Error("User not authenticated - cannot save mnemonic");
       }
 
-      // Simulazione per i test
-      if (
-        process.env.NODE_ENV === "test" &&
-        user.get &&
-        typeof user.get().put === "function"
-      ) {
-        await user.get().put({});
-        return;
-      }
 
       // 1. Save to GunDB first
       try {
@@ -960,7 +878,7 @@ export class HDWallet extends EventEmitter {
       throw new Error("User not authenticated");
     }
 
-    // Assicurati che i wallet paths siano inizializzati
+    // Ensure that wallet paths are initialized
     if (!this.walletPathsInitialized) {
       log("[createWallet] Wallet paths not initialized, initializing now...");
       await this.initializeWalletPaths();
@@ -1035,7 +953,7 @@ export class HDWallet extends EventEmitter {
   }
 
   async loadWallets(): Promise<WalletInfo[]> {
-    // Assicurati che i wallet paths siano inizializzati
+    // Ensure that wallet paths are initialized
     if (!this.walletPathsInitialized) {
       log("[loadWallets] Wallet paths not initialized, initializing now...");
       await this.initializeWalletPaths();
@@ -1111,6 +1029,12 @@ export class HDWallet extends EventEmitter {
   async exportMnemonic(password?: string): Promise<string> {
     const mnemonic = await this.getUserMasterMnemonic();
     if (!mnemonic) throw new Error("No mnemonic found");
+
+    if (password) {
+      const encrypted = await SEA.encrypt(mnemonic, password);
+      return JSON.stringify(encrypted);
+    }
+
     return mnemonic;
   }
 
@@ -1119,13 +1043,20 @@ export class HDWallet extends EventEmitter {
    */
   async exportWalletKeys(password?: string): Promise<string> {
     const wallets = await this.loadWallets();
-    return JSON.stringify(
+    const keys = JSON.stringify(
       wallets.map((w) => ({
         address: w.address,
         privateKey: w.wallet.privateKey,
         path: w.path,
       }))
     );
+
+    if (password) {
+      const encrypted = await SEA.encrypt(keys, password);
+      return JSON.stringify(encrypted);
+    }
+
+    return keys;
   }
 
   /**
@@ -1133,7 +1064,14 @@ export class HDWallet extends EventEmitter {
    */
   async exportGunPair(password?: string): Promise<string> {
     const user = this.gun.user();
-    return JSON.stringify(user._.sea);
+    const pair = user._.sea;
+
+    if (password) {
+      const encrypted = await SEA.encrypt(JSON.stringify(pair), password);
+      return JSON.stringify(encrypted);
+    }
+
+    return JSON.stringify(pair);
   }
 
   /**
@@ -1156,7 +1094,16 @@ export class HDWallet extends EventEmitter {
     mnemonicData: string,
     password?: string
   ): Promise<boolean> {
-    await this.saveUserMasterMnemonic(mnemonicData);
+    let mnemonic = mnemonicData;
+    if (password) {
+      const decrypted = await SEA.decrypt(JSON.parse(mnemonicData), password);
+      if (!decrypted) {
+        throw new Error("Failed to decrypt mnemonic. Invalid password?");
+      }
+      mnemonic = decrypted as string;
+    }
+
+    await this.saveUserMasterMnemonic(mnemonic);
     return true;
   }
 
@@ -1167,7 +1114,16 @@ export class HDWallet extends EventEmitter {
     walletsData: string,
     password?: string
   ): Promise<number> {
-    const wallets = JSON.parse(walletsData);
+    let walletsJson = walletsData;
+    if (password) {
+      const decrypted = await SEA.decrypt(JSON.parse(walletsData), password);
+      if (!decrypted) {
+        throw new Error("Failed to decrypt wallet keys. Invalid password?");
+      }
+      walletsJson = decrypted as string;
+    }
+
+    const wallets = JSON.parse(walletsJson);
     let count = 0;
     for (const wallet of wallets) {
       this.walletPaths[wallet.address] = {
@@ -1195,7 +1151,37 @@ export class HDWallet extends EventEmitter {
    * Import Gun pair with optional password decryption
    */
   async importGunPair(pairData: string, password?: string): Promise<boolean> {
-    return true; // Placeholder
+    try {
+      let pairJson = pairData;
+      if (password) {
+        const decrypted = await SEA.decrypt(JSON.parse(pairData), password);
+        if (!decrypted) {
+          throw new Error("Failed to decrypt Gun pair. Invalid password?");
+        }
+        pairJson = decrypted as string;
+      }
+
+      const pair = JSON.parse(pairJson);
+      const user = this.gun.user();
+
+      // We need to await the auth result
+      const result = await new Promise((resolve, reject) => {
+        user.auth(pair, (ack: any) => {
+          if (ack.err) {
+            logError("Gun authentication failed:", ack.err);
+            reject(new Error(ack.err));
+          } else {
+            log("Gun authentication successful");
+            resolve(true);
+          }
+        });
+      });
+
+      return !!result;
+    } catch (error) {
+      logError("Error importing Gun pair:", error);
+      return false;
+    }
   }
 
   /**

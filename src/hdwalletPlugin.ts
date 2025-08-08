@@ -364,8 +364,7 @@ export class HDWalletPlugin
       return null;
     }
 
-    // Simplified to avoid TypeScript errors
-    return this.hdWallet.getProvider() ? "configured" : null;
+    return this.hdWallet.getRpcUrl();
   }
 
   /**
