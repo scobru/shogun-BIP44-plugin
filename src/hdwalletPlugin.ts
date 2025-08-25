@@ -3,7 +3,7 @@ import { HDWallet } from "./hdwallet";
 import { HDWalletPluginInterface, WalletInfo, WalletConfig } from "./types";
 import { ethers } from "ethers";
 import { log } from "./utils";
-import { ShogunCore, ShogunSDKConfig, PluginCategory } from "shogun-core";
+import { ShogunCore, ShogunCoreConfig, PluginCategory } from "shogun-core";
 
 /**
  * Plugin for HD wallet functionality management in ShogunCore
